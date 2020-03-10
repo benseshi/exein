@@ -1,0 +1,4 @@
+config EXEIN_INTERFACE
+        tristate "Exein userspace interface support"
+        help
+        This driver provides Exein proc interface

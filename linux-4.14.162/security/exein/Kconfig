@@ -1,0 +1,32 @@
+config SECURITY_EXEIN
+	bool "Exein Linux Security Module"
+	depends on SECURITY
+	default n
+	help
+	  This selects exein, bla bla bla
+
+config SECURITY_EXEIN_RANDOMFOREST
+        bool "Implement Machine learning engine using random forest"
+        depends on SECURITY_EXEIN
+        default n
+        select SIGNATURE
+        help
+          Bla Bla.
+
+
+config SECURITY_EXEIN_NEURALNETWORK
+        bool "Implement Machine learning engine using Recurrent neural network"
+        depends on SECURITY_EXEIN
+        default n
+        select SIGNATURE
+        help
+          Bla Bla.
+
+config SECURITY_EXEIN_SQUEEZE
+        bool "Optimization needed to squueze the LSM into small boxes"
+        depends on SECURITY_EXEIN
+        default n
+        select SIGNATURE
+        help
+          Bla Bla.
+

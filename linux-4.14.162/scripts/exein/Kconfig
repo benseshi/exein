@@ -1,0 +1,6 @@
+config SECURITY_EXEIN
+	bool "Exein rules the IT"
+	depends on SECURITY
+	default n
+	help
+	  This selects exein, bla bla bla
