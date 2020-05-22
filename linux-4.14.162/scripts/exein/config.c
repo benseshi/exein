@@ -71,14 +71,9 @@ int read_file_content(const char *file, sections_t *section_head)
 	}
 
 	while (fgets(pcon, LINE_LEN, fp)){
-		/** @brief skip all the space character that contains
-			('\r', '\n', '\f', '\t', '\v')
-		*/
 		while (isspace(*pcon)) {
 			pcon++;
 			}
-
-		/** @brief find the section '[]' */
 		if (*pcon == LEFT_BRACE) {
 			if ((ret_buf = strchr(pcon, RIGHT_BRACE))) {
 				if ((section_node = (sections_t *)malloc(sizeof(sections_t))) == NULL) {
@@ -92,11 +87,8 @@ int read_file_content(const char *file, sections_t *section_head)
 					print_error("syntex error , there are need ']'");
 					}
 			}else if (*pcon == COMMENT) {
-				/** @brief this is a comment line and ignore it */
 				continue;
 				}else {
-
-				/** @brief find all the keys and value which under the section found */
 				if (section_node == NULL) {
 					print_error("syntex error, there are no '[]'");
 					}
@@ -144,7 +136,7 @@ int read_file_content(const char *file, sections_t *section_head)
  * @get_section
  * @section      [in]
  * @section_head [in] the struct which stores the head of section list
- * @method       [in] defines the type of data specified to access the structure. 
+ * @method       [in] defines the type of data specified to access the structure.
  *                    Valid methods includes: NAME, NUMBER.
  * Return a pointer to the section having the specified characteristics if found; NULL elsewhere.
  */
@@ -207,7 +199,6 @@ int add_section(char *section_name, sections_t *section_head){
 	return 0;
 }
 
-
 /*
  * @add_key
  * @key_name [in]
@@ -245,9 +236,6 @@ int add_key(char *section_name, char *key_name, char *key_value, sections_t *sec
 	list_add_tail(&tmp_key->node, &section_node->keys->node);
         return 0;
 }
-
-
-
 
 /*
  * @get_key
@@ -355,9 +343,6 @@ void print_ini(sections_t *section_head){
                 }
 }
 
-
-
-
 /*
  * @read_ini_file
  * @filename[in] the name of *.ini file
@@ -365,12 +350,7 @@ void print_ini(sections_t *section_head){
  */
 int read_ini_file(char * filename, sections_t *section_head)
 {
-	/** @brief init the head of list */
 	INIT_LIST_HEAD(&section_head->node);
-
-
-	/** @brief parse the whole .ini file and
-		store information in section_head list */
 	read_file_content(filename, section_head);
 
 	return 0;

@@ -1,18 +1,17 @@
-/* Copyright 2019 Exein. All Rights Reserved.
-
-Licensed under the GNU General Public License, Version 3.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    https://www.gnu.org/licenses/gpl-3.0.html
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-==============================================================================*/
-
+/*
+ * exein Linux Security Module
+ *
+ * Authors: Alessandro Carminati <alessandro@exein.io>,
+ *          Gianluigi Spagnuolo <gianluigi@exein.io>,
+ *          Alan Vivona <alan@exein.io>
+ *
+ * Copyright (C) 2020 Exein, SpA.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 3, as
+ * published by the Free Software Foundation.
+ *
+ */
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/init.h>
@@ -24,15 +23,20 @@ limitations under the License.
 #include <linux/skbuff.h>
 
 
-#define NETLINK_USER 31
+#define NETLINK_USER 			31
 //#define EXEIN_PRINT_DEBUG
-#define BUFFLEN 768
+#define BUFFLEN 			768
+#define EXEIN_ONREQUEST                 0x80
+#define EXEIN_LIVE                      0x81
+
+
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_AUTHOR("Exein");
 
-extern int exein_debug;
+extern int exein_mode;
 extern void *exein_payload_process_ptr;
 extern void *exein_register_status_get_ptr;
+extern void *exein_pid_status_get_ptr;
 extern int exein_interface_ready;
 extern struct sock *exein_nl_sk_lsm;
 extern int exein_rndkey;
@@ -75,16 +79,12 @@ static void nl_recv_msg(struct sk_buff *skb) {
 
 static ssize_t exeinwrite(struct file *file, const char __user *ubuf,size_t count, loff_t *ppos)
 {
-	if (exein_debug==0){
-		exein_debug=1;
-		#ifdef EXEIN_PRINT_DEBUG
-        printk( KERN_INFO "ExeinLKM - debug ENABLED\n");
-		#endif
+	if (exein_mode==EXEIN_ONREQUEST){
+		exein_mode=EXEIN_LIVE;
+	        printk( KERN_INFO "ExeinLKM - LSM mode switched in live\n");
 	}else{
-		exein_debug=0;
-		#ifdef EXEIN_PRINT_DEBUG
-		printk( KERN_INFO "ExeinLKM - debug DISABLED\n");
-		#endif
+		exein_mode=EXEIN_ONREQUEST;
+		printk( KERN_INFO "ExeinLKM - LSM mode switched in on request\n");
 	}
 	*ppos = count;
 	return count;
@@ -96,14 +96,14 @@ static ssize_t exeinread(struct file *file, char __user *ubuf, size_t count, lof
 	char buff[BUFFLEN];
 	char *fn;
 	int (*exein_register_status_get)(char *,int)=exein_register_status_get_ptr;
-
+	int (*exein_pid_status_get)(char *,int)=exein_pid_status_get_ptr;
 
 	fn=dentry_path_raw(file->f_path.dentry,buff,BUFFLEN);
 
 #ifdef EXEIN_PRINT_DEBUG
         if (strcmp(fn, "/exein/rndkey")==0){
 		if (*ppos==0){
-			len+=sprintf(buff,"%d\n",exein_rndkey);
+			len+=snprintf(buff,BUFFLEN,"%d\n",exein_rndkey);
 			if(copy_to_user(ubuf,buff,len+1)) {
 				return -EFAULT;
 				}
@@ -122,10 +122,20 @@ static ssize_t exeinread(struct file *file, char __user *ubuf, size_t count, lof
                         }
                 }
 
+
+	if (strcmp(fn, "/exein/pids")==0){
+		if (*ppos==0){
+			len=exein_pid_status_get(buff, BUFFLEN);
+			if(copy_to_user(ubuf,buff,len+1)) {
+				EFAULT;
+				}
+			*ppos = len;
+			}
+		}
         return len;
 }
 
-static struct file_operations myops =
+static struct file_operations ops =
 {
         .owner = THIS_MODULE,
         .read = exeinread,
@@ -147,12 +157,14 @@ static int init(void)
 	char *dirname="exein";
 	struct proc_dir_entry *parent;
 	parent=proc_mkdir(dirname,NULL);
-	ent=proc_create("debug_ctl",0660,parent,&myops);
+	ent=proc_create("mode_ctl",0660,parent,&ops);
 #ifdef EXEIN_PRINT_DEBUG
-        ent=proc_create("rndkey",0660,parent,&myops);
+        ent=proc_create("rndkey",0660,parent,&ops);
 #endif
-	ent=proc_create("regs",0660,parent,&myops);
+	ent=proc_create("regs",0660,parent,&ops);
 	exein_interface_ready=1;
+	ent=proc_create("pids",0660,parent,&ops);
+        exein_interface_ready=1;
 
 	printk(KERN_INFO "ExeinLKM - Interface module load complete. Interface ready.\n");
 	return 0;

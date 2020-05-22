@@ -1,18 +1,17 @@
-/* Copyright 2019 Exein. All Rights Reserved.
-
-Licensed under the GNU General Public License, Version 3.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    https://www.gnu.org/licenses/gpl-3.0.html
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-==============================================================================*/
-
+/*
+ * exein Linux Security Module
+ *
+ * Authors: Alessandro Carminati <alessandro@exein.io>,
+ *          Gianluigi Spagnuolo <gianluigi@exein.io>,
+ *          Alan Vivona <alan@exein.io>
+ *
+ * Copyright (C) 2020 Exein, SpA.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 3, as
+ * published by the Free Software Foundation.
+ *
+ */
 #include "exein_struct_mappings.h"
 #include "exein_nn_defs_parts.h"
 
@@ -102,13 +101,13 @@ void exein_map_vm_area_struct_to_features(const struct vm_area_struct * input, s
     }
     features_arr[(*index_p)++] = (exein_feature_t) (*input).vm_start;                  /* Start address within vm_mm. */
     features_arr[(*index_p)++] = (exein_feature_t) (*input).vm_end;                    /* The first byte after the end address within vm_mm. */
+    //features_arr[(*index_p)++] = (exein_feature_t) (*input).vm_page_prot.pgprot;
     features_arr[(*index_p)++] = (exein_feature_t) (*input).vm_flags;                  /* Flags: https://elixir.bootlin.com/linux/v5.1.11/source/include/linux/mm.h#L197 */
 
     if(input->vm_mm == NULL){
         (*index_p)+=STRUCT_VM_AREA_STRUCT-4;
         return;
     }
-
     features_arr[(*index_p)++] = (exein_feature_t) (*input).vm_mm->mm_users.counter;
     features_arr[(*index_p)++] = (exein_feature_t) (*input).vm_mm->data_vm;
     features_arr[(*index_p)++] = (exein_feature_t) (*input).vm_mm->exec_vm;
@@ -148,6 +147,7 @@ void exein_map_task_struct_to_features(const struct task_struct* input, size_t* 
     //4.14.151
     features_arr[(*index_p)++] = (exein_feature_t) (*input).usage.counter;    /* indicates how many object are referencing this task */
 	  features_arr[(*index_p)++] = (exein_feature_t) (*input).static_prio;           /* static_prio is the starting priority which is not affected by the scheduler dynamics */
+    //features_arr[(*index_p)++] = (exein_feature_t) (*input).thread_pid->count.counter;
 
     // TODO: Map the whole path?
     // target->nameidata->path
@@ -196,11 +196,9 @@ void exein_map_dentry_to_features(const struct dentry *input, size_t* index_p, e
         return;
     }
 
-    //printk(EXEIN_PRINT_LEVEL "MAP dentry to features disabled\n");
-
     // TODO:  Map the d_name qstr to features
     // input->d_name;  // this is a struct qstr (quickstring)
-                    // it contains not only the dentry name but also the hash. Which is better in our case
+    // it contains not only the dentry name but also the hash. Which is better in our case
     // In case we use the full name : exein_map_string_to_features(fullname, 768, index_p, features_arr);
 
     exein_map_inode_to_features((*input).d_inode, index_p, features_arr);
@@ -264,6 +262,11 @@ void exein_map_linux_binprm_to_features(const struct linux_binprm *input, size_t
     //printk(EXEIN_PRINT_LEVEL "MAP linux_binprm to features not implemented\n");
 }
 
+//4.14.151
+// void exein_map_fs_parameter_to_features(const struct fs_parameter *input, size_t* index_p, exein_feature_t* features_arr){
+//     printk(EXEIN_PRINT_LEVEL "MAP fs_parameter to features not implemented\n");
+// }
+
 
 void exein_map_path_to_features(const struct path *input, size_t* index_p, exein_feature_t* features_arr){
     //printk(EXEIN_PRINT_LEVEL "MAP path to features not implemented\n");
@@ -274,3 +277,5 @@ void exein_map_qstr_to_features(const struct qstr *input, size_t* index_p, exein
     //printk(EXEIN_PRINT_LEVEL "MAP qstr to features not implemented\n");
 }
 
+//4.14.151
+//void exein_map_fs_context_to_features(const struct fs_context * input, size_t* index_p, exein_feature_t* features_arr){}

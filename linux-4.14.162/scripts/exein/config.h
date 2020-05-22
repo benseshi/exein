@@ -29,8 +29,6 @@
 #define SectionName(ptr) (ptr)!=NULL?(ptr)->section:"NA"
 #define KeyValue(ptr) (ptr)!=NULL?(ptr)->value:"NA"
 #define KeyName(ptr) (ptr)!=NULL?(ptr)->key:"NA"
-
-/** @brief max length of each value */
 #define VALUE_LEN 256
 
 typedef struct keys {
@@ -53,17 +51,14 @@ typedef struct group_range {
 }group_range_t;
 
 extern group_range_t *g_group;
-/** @brief the end of each line */
 #define NEW_LINE(c) ('\n' == c || '\r' == c)? 1 : 0
-
-/** @brief delete the end-of-line indicator */
 #define DELE_NEW_LINE_INDICATOR(buffer, len) 	\
 									if (NEW_LINE(buffer[len - 1])) { \
 										if (NEW_LINE(buffer[len - 2])) \
 											buffer[len - 2] = '\0';   \
 										else  						\
 											buffer[len - 1] = '\0';\
-									}	
+									}
 
 #define STRING_COMPARE(x, equ, y) (strcmp(x, y) equ 0)
 

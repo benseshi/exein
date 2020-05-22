@@ -1,17 +1,17 @@
-/* Copyright 2019 Exein. All Rights Reserved.
-
-Licensed under the GNU General Public License, Version 3.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    https://www.gnu.org/licenses/gpl-3.0.html
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-==============================================================================*/
+/*
+ * exein Linux Security Module
+ *
+ * Authors: Alessandro Carminati <alessandro@exein.io>,
+ *          Gianluigi Spagnuolo <gianluigi@exein.io>,
+ *          Alan Vivona <alan@exein.io>
+ *
+ * Copyright (C) 2020 Exein, SpA.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 3, as
+ * published by the Free Software Foundation.
+ *
+ */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,6 +19,8 @@ limitations under the License.
 #include <ctype.h>
 #include "../config.h"
 
+
+//#define EXEIN_COMPSIZE_PRINT
 #define FILE_BUFFER_SIZE 1048510
 #define MAXCHAR 1024
 
@@ -29,7 +31,6 @@ char *getMainType(char *s){
 		}
 	while ((*(s+i)=='"') || (*(s+i)=='_') || (*(s+i)=='*')  || (*(s+i)=='\x00')) i--;
 	*(s+i+1)='\x00';
-
 	return s+1;
 }
 
@@ -84,6 +85,20 @@ int main(int argc, char **argv)
 		 pos+=sprintf((H_file+pos),flag==0?" 0\n":"\n");
 		 flag=0;
 		}
+#ifdef EXEIN_COMPSIZE_PRINT
+	pos+=sprintf((H_file+pos),"/********************************************|DEBUG START|********************************************/\n");
+	for (int i=0;tmp_sec=get_section(&i,&section_head, NUMBER); i++){
+		tmp_str=SectionName(tmp_sec);
+		for (int t=0; t<strlen(tmp_str);t++) *(tmp_str+t)= toupper((unsigned char) *(tmp_str+t));
+		pos+=sprintf((H_file+pos),"#ifdef %s\n", tmp_str);
+		pos+=sprintf((H_file+pos),"#define SYMNAME \"%s\"\n", tmp_str);
+		pos+=sprintf((H_file+pos),"#define EVALUATE_ %s\n", tmp_str);
+		pos+=sprintf((H_file+pos),"#include \"eval_p_sym.h\"\n");
+		pos+=sprintf((H_file+pos),"#endif\n");
+		}
+	pos+=sprintf((H_file+pos),"/********************************************|DEBUG END|********************************************/\n");
+#endif
+
 /*
               _               _
              | |             | |

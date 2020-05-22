@@ -1,18 +1,22 @@
-/* Copyright 2019 Exein. All Rights Reserved.
+/*
+ * exein Linux Security Module
+ *
+ * Authors: Alessandro Carminati <alessandro@exein.io>,
+ *          Gianluigi Spagnuolo <gianluigi@exein.io>,
+ *          Alan Vivona <alan@exein.io>
+ *
+ * Copyright (C) 2020 Exein, SpA.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 3, as
+ * published by the Free Software Foundation.
+ *
+ */
 
-Licensed under the GNU General Public License, Version 3.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    https://www.gnu.org/licenses/gpl-3.0.html
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-==============================================================================*/
-
+/********************************************************************************************************************************************/
+//#define EXEIN_PRINT_DEBUG
+#define EXEIN_STUFF_DEBUG
+/********************************************************************************************************************************************/
 
 #include "exein_nn_main.h"
 #include "exein_struct_mappings.h"
@@ -34,27 +38,30 @@ limitations under the License.
  #define EXEIN_PROT_TAG_POS 3
 #endif
 
-//#define EXEIN_PRINT_DEBUG
-#define EXEIN_STUFF_DEBUG
+
 #define NN_DEBUG 1
-#define CURRENT_PROCESS_FEATURES 1 // Took as a duplicate from exein_struct_mappings.c as a temporal solution
+#define CURRENT_PROCESS_FEATURES 1           // Took as a duplicate from exein_struct_mappings.c as a temporal solution
 #undef EXEIN_FS_CONTEXT_PARSE_PARAM_SWITCH   //this hook, newly implemented, generates some issues / not available on 4.14.151
 #undef EXEIN_FS_CONTEXT_DUP_SWITCH           //not available on 4.14.151
 #undef EXEIN_INODE_GETSECURITY_SWITCH
 
+int	exein_mode=EXEIN_ONREQUEST;
+void	*exein_payload_process_ptr;
+void	*exein_register_status_get_ptr, *exein_pid_status_get_ptr;
+int	exein_interface_ready=0;
+struct	sock *exein_nl_sk_lsm=NULL;
 
-int   exein_debug=0;
-void *exein_payload_process_ptr;
-void *exein_register_status_get_ptr;
-int   exein_interface_ready=0;
-struct sock *exein_nl_sk_lsm=NULL;
+DEFINE_SPINLOCK(exein_pid_data_access);
+DEFINE_SPINLOCK(exein_reg_data_access);
 
 DEFINE_HASHTABLE(nl_peers,5);
+DEFINE_HASHTABLE(pid_repo,5);
 
-EXPORT_SYMBOL(exein_debug);
+EXPORT_SYMBOL(exein_mode);
 EXPORT_SYMBOL(exein_payload_process_ptr);
 EXPORT_SYMBOL(exein_interface_ready);
 EXPORT_SYMBOL(exein_nl_sk_lsm);
+EXPORT_SYMBOL(exein_pid_status_get_ptr);
 EXPORT_SYMBOL(exein_register_status_get_ptr);
 
 #ifdef EXEIN_STUFF_DEBUG
@@ -67,7 +74,7 @@ static int hash_func(u16 data)
     return data & 0x1f;
 }
 
-int *exein_register_status_get(char *buf, int size){
+int exein_register_status_get(char *buf, int size){ // TODO: Replace sprintf with snprintf. Use the size argument
 	int pos=0;
         int bkt_cursor;
         exein_reg_data *reg_data;
@@ -78,18 +85,70 @@ int *exein_register_status_get(char *buf, int size){
 	return pos;
 }
 
-int exein_delete_expired_regs(void){
-	int bkt_cursor;
+int exein_pid_status_get(char *buf, int size){
+	int pos=0, peerpid=0;
+	int bkt_cursor, pid_cursor;
 	exein_reg_data *reg_data;
+	exein_pid_data *pid_data;
+
+	pos+=sprintf( (buf+pos),"pid, tag, peer_pid\n");
+	hash_for_each(pid_repo, pid_cursor, pid_data, next){
+		hash_for_each(nl_peers, bkt_cursor, reg_data, next) if (reg_data->tag==pid_data->tag) peerpid=reg_data->pid;
+		pos+=sprintf( (buf+pos),"%d,%d,%d\n", pid_data->pid, pid_data->tag, peerpid);
+		}
+	return pos;
+}
+
+
+void exein_delete_expired_regs(void){
+	int			bkt_cursor, pid_cursor;
+	exein_reg_data		*reg_data;
+	exein_pid_data          *pid_data;
 
 	hash_for_each(nl_peers, bkt_cursor, reg_data, next){
 		if (jiffies_64-reg_data->timestamp>EXEIN_REG_DURATION){
-#ifdef EXEIN_PRINT_DEBUG
-			printk(KERN_INFO "ExeinLSM - PeerID: %d Tag: %d is expired.\n", reg_data->pid, reg_data->tag, reg_data->timestamp);
-#endif
+                        spin_lock(&exein_reg_data_access);
+			DODEBUG(KERN_INFO "ExeinLSM - PeerID: %d Tag: %d is expired.\n", reg_data->pid, reg_data->tag, reg_data->timestamp);
+			hash_for_each(pid_repo, pid_cursor, pid_data, next){     // look at the PIDs we have, if found update the ring buffer
+				if (reg_data->tag==pid_data->tag){               //check if current is hash item corresponds to the target
+					hash_del(&pid_data->next);
+					}
+				}
 			hash_del(&reg_data->next);
+                        kfree(reg_data);
+                        spin_unlock(&exein_reg_data_access);
 			}
 		}
+}
+
+
+int exein_send_nl_msg(void *pl, int plsize, pid_t dst_pid){
+	struct sk_buff *skb_out;
+	struct nlmsghdr *nlh;
+	int err;
+
+	DODEBUG(KERN_INFO "ExeinLSM - exein_send_nl_msg pl=%p, size=%d, PID=%d\n", pl, plsize, dst_pid);
+	skb_out = nlmsg_new(sizeof(exein_prot_reply),0);         //message to notify new pid.
+	if(!skb_out) {
+		printk(KERN_INFO "ExeinLSM - Failed to allocate new skb\n");
+		return -ENOBUFS; //if this goes wrong, there's no mean in collecting data. MLE won't ask for them
+		}
+	nlh=nlmsg_put(skb_out, 0, 0, NLMSG_DONE, plsize,0);
+	if (!nlh) {
+		nlmsg_free(skb_out);
+		printk(KERN_INFO "ExeinLSM - Failed to nlmsg_put\n");
+		return -ENOBUFS; //if this goes wrong, there's no mean in collecting data. MLE won't ask for them
+		}
+	NETLINK_CB(skb_out).dst_group = 0;
+
+	memcpy(nlmsg_data(nlh), pl, plsize); //TODO: Does not check for buffer overflows when copying to destination (CWE-120). Make sure destination can always hold the source data.
+	err = netlink_unicast(exein_nl_sk_lsm, skb_out, dst_pid, 0); // MSG_DONTWAIT=0x40  //err=nlmsg_unicast(exein_nl_sk_lsm, skb_out, reg_data->pid);
+	if (err<0) {
+		DODEBUG(KERN_INFO "ExeinLSM - Failed to send unicast netlink message p=%d, err=%d\n", dst_pid,  err);
+		} else {
+			DODEBUG(KERN_INFO "ExeinLSM - Complete to send unicast netlink message p=%d\n", dst_pid);
+			}
+	return err;
 }
 
 /*return value
@@ -99,111 +158,177 @@ int exein_delete_expired_regs(void){
 */
 static int exein_payload_process(void *data, pid_t pid){
 	int retval=2;
-	int bkt_cursor;
+	int bkt_cursor, pidfound;
 	exein_reg_data *reg_data, *curr_data;
+	u16 curr_tag;
 
+	DODEBUG(KERN_INFO "ExeinLSM - exein_payload_process data@%p, from pid=%d\n", data, pid);
 	if ((((exein_prot_req_t *)data)->key == SEEDRND)){
 		switch (((exein_prot_req_t *)data)->message_id){
 		case EXEIN_PROT_REGISTRATION_ID:
-            #ifdef EXEIN_PRINT_DEBUG
-			    printk(KERN_INFO "ExeinLSM - Registration request for tag [%d] from MLE (PID %d)\n", ((exein_prot_req_t *)data)->tag, pid);
-            #endif
+			curr_tag = ((exein_prot_req_t *)data)->tag;
+			DODEBUG(KERN_INFO "ExeinLSM - Registration request for tag [%d] from MLE (PID %d)\n", curr_tag, pid);
+			hash_for_each(nl_peers, bkt_cursor, curr_data, next){
+				if (curr_data->tag == curr_tag){
+					DODEBUG(KERN_INFO "ExeinLSM - Tag [%d] exists!\n", curr_tag);
+					retval=2;
+					return retval;
+					}
+				}
 			reg_data=kmalloc(sizeof(exein_reg_data),GFP_KERNEL);
 			reg_data->pid=pid;
 			reg_data->tag=((exein_prot_req_t *)data)->tag;
 			reg_data->timestamp=jiffies_64;
 			reg_data->seqn=0;
 			reg_data->processing=0;
+			spin_lock(&exein_reg_data_access);
 			hash_add(nl_peers, &reg_data->next, reg_data->pid);
+			spin_unlock(&exein_reg_data_access);
             #ifdef EXEIN_PRINT_DEBUG
-			    hash_for_each(nl_peers, bkt_cursor, reg_data, next)
-				printk(KERN_INFO "ExeinLSM - PeerID: %d Tag: %d @time=%llu\n", reg_data->pid, reg_data->tag, reg_data->timestamp);
+			hash_for_each(nl_peers, bkt_cursor, reg_data, next)
+			printk(KERN_INFO "ExeinLSM - PeerID: %d Tag: %d @time=%llu\n", reg_data->pid, reg_data->tag, reg_data->timestamp);
             #endif
 			retval=1;
 			break;
 		case EXEIN_PROT_KEEPALIVE_ID:
 			hash_for_each_possible(nl_peers, curr_data, next, pid) {
 				if ((curr_data->tag==((exein_prot_req_t *)data)->tag)){
+					spin_lock(&exein_reg_data_access); //not sure ho much thi is useful
 					curr_data->timestamp=jiffies_64;
-#ifdef EXEIN_PRINT_DEBUG
-					printk(KERN_INFO "ExeinLSM - MLE (PID %d) for tag [%d] registration updated\n", pid, ((exein_prot_req_t *)data)->tag);
-#endif
+					spin_unlock(&exein_reg_data_access); // same as above
+					DODEBUG(KERN_INFO "ExeinLSM - MLE (PID %d) for tag [%d] registration updated\n", pid, ((exein_prot_req_t *)data)->tag);
 					retval=0;
 					return retval;
 					}
 				}
-#ifdef EXEIN_PRINT_DEBUG
-			printk(KERN_INFO "ExeinLSM - Unknown MLE received: (PID %d) for tag [%d]\n", pid, ((exein_prot_req_t *)data)->tag);
-#endif
+			DODEBUG(KERN_INFO "ExeinLSM - Unknown MLE received: (PID %d) for tag [%d]\n", pid, ((exein_prot_req_t *)data)->tag);
 			retval=0;
 			break;
 		case EXEIN_PROT_BLOCK_ID:
-#ifdef EXEIN_PRINT_DEBUG
-			printk(KERN_INFO "ExeinLSM - Block process (%d) request for tag [%d] from MLE (PID %d)\n", ((exein_prot_req_t *)data)->pid, ((exein_prot_req_t *)data)->tag, pid);
-#endif
+			DODEBUG(KERN_INFO "ExeinLSM - Block process (%d) request for tag [%d] from MLE (PID %d)\n", ((exein_prot_req_t *)data)->pid, ((exein_prot_req_t *)data)->tag, pid);
 			exein_mark_not_trusted(((exein_prot_req_t *)data)->tag, ((exein_prot_req_t *)data)->pid);
 			retval=0;
 			break;
-		case EXEIN_PROT_SCHEMAREQUEST:
-#ifdef EXEIN_PRINT_DEBUG
-			printk(KERN_INFO "ExeinLSM - Schema request from MLE (PID %d)", pid);
-#endif
+		case EXEIN_PROT_DATA_REQ:
+			DODEBUG(KERN_INFO "ExeinLSM - data request from MLE (MLE_PID %d, Requested_PID=%d)\n", pid,((exein_prot_req_t *)data)->pid);
+			//look4 data in the "storage" and send it back
+			pidfound=0;
+			//for each request a message have to be send back.
+			hash_for_each(nl_peers, bkt_cursor, reg_data, next){
+				if (((exein_prot_req_t *)data)->tag==reg_data->tag) {
+					reg_data->pending_request=1;
+					}
+				}
+
 			retval=0;
 			break;
 		default:
-#ifdef EXEIN_PRINT_DEBUG
-			printk(KERN_INFO "ExeinLSM - Request about tag [%d] from MLE (PID %d) payload pid %d padding %d", ((exein_prot_req_t *)data)->tag, pid, ((exein_prot_req_t *)data)->pid, ((exein_prot_req_t *)data)->padding);
-#endif
+			DODEBUG(KERN_INFO "ExeinLSM - Request about tag [%d] from MLE (PID %d) payload pid %d padding %d", ((exein_prot_req_t *)data)->tag, pid, ((exein_prot_req_t *)data)->pid, ((exein_prot_req_t *)data)->padding);
 			retval=0;
 		}
 	} else printk(KERN_INFO "ExeinLSM - Wrong key, request discarded\n");
 
-	return retval;
+return retval;
 }
 
 static void commit_data(exein_feature_t *data, int size, uint16_t *NNInput){
-	int bkt_cursor, err;
+	int bkt_cursor, err, pid_cursor, i, pid_found, pl_cursor, buf_cursor;
 	exein_reg_data *reg_data;
-	struct sk_buff *skb_out;
-	struct nlmsghdr *nlh;
+	exein_pid_data *pid_data;
+	exein_prot_reply msg_rpy;
 
-    #ifdef EXEIN_PRINT_DEBUG_EXTREME
-	    if (data[EXEIN_PROT_TAG_POS]!=0) printk(KERN_INFO "ExeinLSM - Commit data for tag %d\n", data[5]);
-    #endif
+#ifdef EXEIN_PRINT_DEBUG_EXTREME
+	if (data[EXEIN_PROT_TAG_POS]!=0) printk(KERN_INFO "ExeinLSM - Commit data for tag %d\n", data[5]);
+#endif
 
     hash_for_each(nl_peers, bkt_cursor, reg_data, next){
 		if ((data[EXEIN_PROT_TAG_POS]==reg_data->tag)&&(reg_data->processing==0)) {
 			reg_data->processing=1;
-#ifdef EXEIN_PRINT_DEBUG
-			printk(KERN_INFO "ExeinLSM - Feeding data to %d, size %d, hookid=%d\n", reg_data->pid, size, data[EXEIN_PROT_TAG_POS]);
-#endif
-			data[EXEIN_PROT_TAG_POS]=NNInput[EXEIN_HOOK_ID_ARG1_POS];
-			data[size++]=(u16) reg_data->seqn++;
-			do {
-				skb_out = nlmsg_new(size*sizeof(exein_feature_t),0);
-				if(!skb_out)
-					{
-					printk(KERN_INFO "ExeinLSM - [xxxxxxxxxxxxxxxxxxxx] - Failed to allocate new skb %d\n", skb_out);
-					reg_data->processing=0;
-					return;
-					}
-				nlh=nlmsg_put(skb_out,0,0,NLMSG_DONE,size*sizeof(exein_feature_t),0);
-				if (!nlh) {
-					nlmsg_free(skb_out);
-					printk(KERN_INFO "ExeinLSM - [xxxxxxxxxxxxxxxxxxxx] - Failed to nlmsg_put %d\n", nlh);
-					reg_data->processing=0;
-					return;
-					}
-				NETLINK_CB(skb_out).dst_group = 0; /* not in mcast group */
-				memcpy(nlmsg_data(nlh),data,size*sizeof(exein_feature_t));
-                	        err=nlmsg_unicast(exein_nl_sk_lsm, skb_out, reg_data->pid);
-				if (err>=0) break;
-				msleep(100);
-				printk(KERN_INFO "ExeinLSM - Failed to send unicast netlink message p=%d, t=%d, seq=%d err=%d\n", reg_data->pid, reg_data->tag, reg_data->seqn, err);
-			} while (err==-EAGAIN);
-			reg_data->processing=0;
-			}
+			DODEBUG(KERN_INFO "ExeinLSM - Feeding data to %d, size %d, tag=%d\n", reg_data->pid, size, data[EXEIN_PROT_TAG_POS]);
+			if (size>EXEIN_FEATURE_NUM_MAX) printk(KERN_INFO "ExeinLSM - [!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!] - size is unusually high (%d)\n", size);
+			data[EXEIN_PROT_TAG_POS]=NNInput[EXEIN_HOOK_ID_ARG1_POS]; //tag is used no more
+			pid_found=0;
+
+			switch (exein_mode){
+				case EXEIN_ONREQUEST:
+					hash_for_each(pid_repo, pid_cursor, pid_data, next){ // look at the PIDs we have, if found update the ring buffer
+						if (data[2]==pid_data->pid){ //check if current is hash item corresponds to the target
+							//look for pid, and update buffer
+							spin_lock(&exein_pid_data_access);
+							pid_data->index++;
+							pid_data->index&=0x1f;
+							DODEBUG(KERN_INFO "ExeinLSM - there's already the pid %d, in the structure. (index=%d) <- hookid=%d\n", data[2], pid_data->index, data[3]); //to be removed.
+			                                memcpy(pid_data->hookdata[pid_data->index], data, size*sizeof(exein_feature_t));
+							spin_unlock(&exein_pid_data_access);
+							pid_found=1;
+							if (reg_data->pending_request==1){
+								DODEBUG(KERN_INFO "ExeinLSM - since data feed has been requested, prepare payload to send data back to registered peer\n");
+								msg_rpy.msg_type = EXEIN_PROT_FEED_ID;
+								msg_rpy.seed = SEEDRND;
+								msg_rpy.seq=(u16) reg_data->seqn++;
+								msg_rpy.pid = pid_data->pid;
+								DODEBUG(KERN_INFO "ExeinLSM - Header details: Type=%d, seed=%d, seqn=%d, objpid=%d\n", msg_rpy.msg_type, msg_rpy.seed, msg_rpy.seq, msg_rpy.pid);
+								pl_cursor=0;
+								buf_cursor=pid_data->index;
+								buf_cursor=(buf_cursor+1)&0x1f;
+								for (pl_cursor=0; pl_cursor<EXEIN_RINGBUFFER_SIZE; pl_cursor++){
+									*((u16 *) msg_rpy.payload+pl_cursor)=pid_data->hookdata[buf_cursor]->features[3]; //hookid
+									DODEBUG(KERN_INFO "ExeinLSM - @buf[%d]<-rbuf[%d]=%04x\n", pl_cursor, buf_cursor, pid_data->hookdata[buf_cursor]->features[3]);
+									buf_cursor=(buf_cursor+1)&0x1f;
+									}
+								err=exein_send_nl_msg(&msg_rpy, sizeof(exein_prot_reply), reg_data->pid); //sending message to userspace that feeds hookIDs for specified PID on Registered TAG.
+				                                if (err<0) printk(KERN_INFO "ExeinLSM - Failed to send unicast FEED netlink message p=%d, t=%d, seq=%d err=%d\n", reg_data->pid, reg_data->tag, msg_rpy.seq, err);
+									else {
+									reg_data->pending_request=0;
+									DODEBUG(KERN_INFO "ExeinLSM - Feed sent!\n");
+									}
+								}
+							}
+						}
+						if (pid_found==0) { //the PID is not found, add a buffer for it and send netlink message about the event.
+							//Setup a netlink packet and send it on the netlink connection.
+							DODEBUG(KERN_INFO "ExeinLSM - <****> the pid %d is not there it's necessary to insert it. (index=0) <- hookid=%d\n", data[2], data[3]); //to be removed.
+
+							//add buffer for the new pid
+							spin_lock(&exein_pid_data_access);
+							pid_data=kmalloc(sizeof(exein_pid_data), GFP_KERNEL);
+							pid_data->pid=data[2];
+							pid_data->tag=reg_data->tag;
+							for (i=0; i<EXEIN_RINGBUFFER_SIZE; i++) {
+								pid_data->hookdata[i] = kmalloc(sizeof(exein_pid_data_cell), GFP_KERNEL); //allocate all buffers
+								memset(pid_data->hookdata[i], 0, sizeof(exein_pid_data_cell));
+								}
+							hash_add(pid_repo, &pid_data->next, pid_data->pid);
+							//fills the first position with data.
+							pid_data->index=0;
+							memcpy(pid_data->hookdata[0], data, size*sizeof(exein_feature_t));//TODO:Does not check for buffer overflows when copying to destination (CWE-120). Make sure destination can always hold the source data.
+							spin_unlock(&exein_pid_data_access);
+
+							msg_rpy.msg_type = EXEIN_PROT_NEW_PID;
+							msg_rpy.seed = SEEDRND;
+							msg_rpy.seq=(u16) reg_data->seqn++;
+							msg_rpy.pid=data[2];
+							*((pid_t *) msg_rpy.payload) = data[2];
+
+							err=exein_send_nl_msg(&msg_rpy, sizeof(exein_prot_reply), reg_data->pid); //sending message to userspace that new pid appeared for specified tag.
+
+							if (err<0) printk(KERN_INFO "ExeinLSM - Failed to send unicast NEW_PID netlink message p=%d, t=%d, seq=%d err=%d\n", reg_data->pid, reg_data->tag, msg_rpy.seq, err);
+								else {
+									DODEBUG(KERN_INFO "ExeinLSM - NEW_PID Message sent\n");
+									}
+							reg_data->processing=0;
+							}
+						break;
+				case EXEIN_LIVE:
+					data[size++]=(u16) reg_data->seqn++;
+					err=exein_send_nl_msg(data, size<<1, reg_data->pid);
+					break;
+				default:
+					printk(KERN_ERR "ExeinLSM - LSM is working in an unknown mode!\n");
+				}
+		reg_data->processing=0;
 		}
+	}
 }
 
 static void exein_prepare_send_data(size_t start_index, size_t end_index, uint16_t *NNInput){
@@ -230,7 +355,6 @@ static void exein_prepare_send_data(size_t start_index, size_t end_index, uint16
 }
 
 
-/**********************************************************************************************************************/
 #ifdef EXEIN_CAPGET_SWITCH
 static int exein_capget(struct task_struct *target, kernel_cap_t *effective, kernel_cap_t *inheritable, kernel_cap_t *permitted )
 {
@@ -436,8 +560,6 @@ static int exein_path_unlink(const struct path *dir, struct dentry *dentry )
     size_t arg1_pos = EXEIN_PATH_UNLINK_ARG1_POS;
     size_t feature_index = 3;
 
-    exein_map_path_to_features(dir, &feature_index, NNInput);
-    exein_map_dentry_to_features(dentry, &feature_index, NNInput);
     feature_index=arg1_pos+EXEIN_PATH_UNLINK_SIZE;
 
     exein_prepare_send_data(arg1_pos, feature_index, NNInput);
@@ -669,7 +791,6 @@ static int exein_inode_alloc_security(struct inode *inode )
 #ifdef EXEIN_PRINT_DEBUG
 #endif
     NNInput[EXEIN_HOOK_ID_ARG1_POS] = EXEIN_INODE_ALLOC_SECURITY_ID;
-//    printk(KERN_INFO "EXEIN_INODE_ALLOC_SECURITY hookid=%d, pid=%d\n", NNInput[EXEIN_HOOK_ID_ARG1_POS], NNInput[EXEIN_HOOK_CURRENT_PROCESS_ARG1_POS]);
     exein_map_current_to_features(NNInput);
     size_t arg1_pos = EXEIN_INODE_ALLOC_SECURITY_ARG1_POS;
     size_t feature_index = 3;
@@ -1281,13 +1402,7 @@ static int exein_inode_copy_up_xattr(const char *name )
     return playnn(NNInput);
 }
 #endif
-/**
- * exein_file_open - validate file_open calls
- * @file: descriptor of the file
- *
- * stores the filename counter in the rbtree
- * Returns 0 .
- */
+
 #ifdef EXEIN_FILE_OPEN_SWITCH
 //4.14.151
 static int exein_file_open(struct file *file, const struct cred *cred)
@@ -1599,8 +1714,6 @@ static int exein_inode_getsecctx(struct inode *inode, void **ctx, u32 *ctxlen )
 }
 #endif
 
-/********************************************************************************************/
-
 #ifdef EXEIN_SOCKET_POST_CREATE_SWITCH
 static int exein_socket_post_create(struct socket * arg1, int arg2, int arg3, int arg4, int arg5 )
 {
@@ -1721,6 +1834,7 @@ static int exein_socket_accept(struct socket * arg1, struct socket * arg2 )
 /* start -- specific mappings*/
     feature_index=arg1_pos+EXEIN_SOCKET_ACCEPT_SIZE;
 /* end ---- specific mappings*/
+
 
     exein_prepare_send_data(arg1_pos, feature_index, NNInput);
     return playnn(NNInput);
@@ -2192,22 +2306,50 @@ static int exein_task_alloc(struct task_struct * arg1, unsigned long arg2 )
 #ifdef EXEIN_TASK_FREE_SWITCH
 static void exein_task_free(struct task_struct * arg1 )
 {
-	exein_feature_t NNInput[EXEIN_NN_MAX_SIZE];
+	exein_feature_t		NNInput[EXEIN_NN_MAX_SIZE];
+	int			err,i, pid_cursor, bkt_cursor;
+	exein_pid_data		*pid_data;
+	exein_reg_data		*reg_data;
+        exein_prot_reply	msg_rpy;
 
 #ifdef EXEIN_PRINT_DEBUG
 #endif
-    NNInput[EXEIN_HOOK_ID_ARG1_POS] = EXEIN_TASK_FREE_ID;
-    exein_map_current_to_features(NNInput);
-    size_t arg1_pos = EXEIN_TASK_FREE_ARG1_POS;
-    size_t feature_index = 3;
-/* start -- specific mappings*/
-    
-    NNInput[3] = task_struct_get_pid(arg1);
-    feature_index=arg1_pos+EXEIN_TASK_FREE_SIZE;
-/* end ---- specific mappings*/
+	NNInput[EXEIN_HOOK_ID_ARG1_POS] = EXEIN_TASK_FREE_ID;
 
-    exein_prepare_send_data(arg1_pos, feature_index, NNInput);
-    playnn(NNInput);
+	if (exein_mode==EXEIN_ONREQUEST){
+		hash_for_each(pid_repo, pid_cursor, pid_data, next){ // look at the PIDs we have, if found update the ring buffer
+			if (arg1->pid==pid_data->pid){
+	                        hash_for_each(nl_peers, bkt_cursor, reg_data, next){
+	                                if (pid_data->tag==reg_data->tag) {
+						DODEBUG(KERN_INFO "ExeinLSM - pid=%d is no more. Send a message back to tell it\n",arg1->pid);
+						msg_rpy.msg_type = EXEIN_PROT_DEL_PID;
+						msg_rpy.seed = SEEDRND;
+						msg_rpy.seq=(u16) reg_data->seqn++;
+						msg_rpy.pid=reg_data->pid;
+						*((pid_t *) msg_rpy.payload) = arg1->pid;
+						err=exein_send_nl_msg(&msg_rpy, sizeof(exein_prot_reply), reg_data->pid);
+						if (err<0) printk(KERN_INFO "ExeinLSM - Failed to send unicast DEL_PID netlink message p=%d, t=%d, seq=%d err=%d\n", reg_data->pid, reg_data->tag, msg_rpy.seq, err);
+						}
+					}
+				spin_lock(&exein_pid_data_access);
+				DODEBUG("ExeinLSM - pid %d removed from storage\n", arg1->pid);
+				for (i=0; i<EXEIN_RINGBUFFER_SIZE; i++) kfree(pid_data->hookdata[i]);
+				hash_del(&pid_data->next);
+				kfree(pid_data);
+				spin_unlock(&exein_pid_data_access);
+				}
+			}
+		}
+
+	exein_map_current_to_features(NNInput);
+	size_t arg1_pos = EXEIN_TASK_FREE_ARG1_POS;
+	size_t feature_index = 3;
+/* start -- specific mappings*/ 
+	NNInput[3] = task_struct_get_pid(arg1);
+	feature_index=arg1_pos+EXEIN_TASK_FREE_SIZE;
+/* end ---- specific mappings*/
+	exein_prepare_send_data(arg1_pos, feature_index, NNInput);
+	playnn(NNInput);
 }
 #endif
 
@@ -2785,7 +2927,7 @@ static int exein_setprocattr(const char * arg1, void * arg2, size_t arg3 )
 #ifdef EXEIN_INODE_GETSECCTX_SWITCH
      LSM_HOOK_INIT(inode_getsecctx,                       exein_inode_getsecctx ),
 #endif
-//++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
 #ifdef EXEIN_SOCKET_POST_CREATE_SWITCH
     LSM_HOOK_INIT(socket_post_create,	exein_socket_post_create ),
 #endif
@@ -2978,12 +3120,20 @@ static int exein_setprocattr(const char * arg1, void * arg2, size_t arg3 )
 static int __init exein_init(void)
 {
 	pr_info("ExeinLSM - lsm is active: seed [%d]\n",SEEDRND);
-        exein_payload_process_ptr=&exein_payload_process;
-	exein_register_status_get_ptr=*exein_register_status_get;
+        exein_payload_process_ptr	=	&exein_payload_process;
+	exein_register_status_get_ptr	=	&exein_register_status_get;
+	exein_pid_status_get_ptr	=	&exein_pid_status_get;
 	security_add_hooks(exein_hooks, ARRAY_SIZE(exein_hooks), "exein");
 	hash_init(nl_peers);
+	hash_init(pid_repo);
 	return 0;
 }
 
+//4.14.151
 security_initcall(exein_init);
 
+//5.1.11
+// DEFINE_LSM(exein) = {
+// 	.name = "exein",
+// 	.init = exein_init,
+// };
