@@ -1,0 +1,41 @@
+[5143][environment] CWD = libexnl
+[5143][environment] No .inferconfig file found
+[5143][environment] Project root = libexnl
+[5143][environment] INFER_ARGS =   @/tmp/args.tmp.bf2643  ++Contents of '/tmp/args.tmp.bf2643':
+[5143][environment]                                         run
+[5143][environment]                                       
+[5143][environment] command line arguments:   infer run -- gcc -g -I./include -L./lib -pthread -fPIC 
+[5143][environment]                           -c -DVERSION_STRING="libexnl_version_0.5.95" -o
+[5143][environment]                           build/libexnl.o libexnl.cActive checkers: biabduction (C/C++/ObjC, Java), fragment retains view (Java), inefficient keyset iterator (Java), liveness (C/C++/ObjC), RacerD (C/C++/ObjC, Java), SIOF (C/C++/ObjC), uninitialized variables (C/C++/ObjC), Starvation analysis (C/C++/ObjC, Java)
+[5143][environment] Infer log identifier is 
+Infer version v0.17.0
+[5143][environment] Copyright 2009 - present Facebook. All Rights Reserved.
+[5143][environment] 
+[5143][   progress] Capturing in make/cc mode...
+[5143][      debug] 
+[5143][      debug] *** Beginning capture of file libexnl/libexnl.c ***
+[5143][      debug] Clang frontend action is translating and linting
+[5143][      debug] Loading the following linters files: ~/infer-linux64-v0.17.0/lib/infer/infer/bin/../lib/linter_rules/linters.al
+[5143][      debug] Elapsed: 854ms.
+[5143][      debug] 
+[5143][   progress] Found 1 source file to analyze in libexnl/infer-out
+[5143][environment] Parallel jobs: 8
+[5150][   progress] libexnl.c starting
+[5150][   progress] libexnl.c DONE
+[5143][   progress] 
+[5143][   progress] Analysis finished in 3.315ss
+[5143][      debug] collected stats:
+[5143][      debug] Backend stats:
+[5143][      debug]   summary_file_try_load= 1054
+[5143][      debug]   summary_read_from_disk= 11
+[5143][      debug]   summary_cache_hits= 601 (53%)
+[5143][      debug]   summary_cache_misses= 527
+[5143][      debug]   summary_has_model_queries= 0
+[5143][      debug]   ondemand_procs_analyzed= 20
+[5143][      debug]   ondemand_local_cache_hits= 676 (92%)
+[5143][      debug]   ondemand_local_cache_misses= 52
+[5143][      debug]   
+[5143][      debug] 
+[5143][     output] 
+[5143][     output] No issues found
+[5143][     output] 

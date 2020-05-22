@@ -1,3 +1,18 @@
+/* Copyright 2020 Exein. All Rights Reserved.
+
+Licensed under the GNU General Public License, Version 3.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    https://www.gnu.org/licenses/gpl-3.0.html
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+==============================================================================*/
+
 #include <sys/socket.h>
 #include <linux/netlink.h>
 #include <stdlib.h>
@@ -7,7 +22,9 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <arpa/inet.h>
-#include <sys/socket.h>
+#include <linux/if_packet.h>
+#include <sys/types.h>
+#include <signal.h>
 
 #define NETLINK_USER 31
 #define MAX_PAYLOAD 1024 /* maximum payload size*/
@@ -43,7 +60,16 @@ uint16_t put16w(uint16_t data)
 	return app + ((data & 0xff00)>>8);
 #else
 	return data;
-#endif 
+#endif
+}
+int udpsockfd;
+long udpcount=0, netlink_count=0;
+
+
+static void rf_handler(int sig, siginfo_t *si, void *unused){
+	printf( "Netlink Packets in: %u, udp Packets out: %u\n", netlink_count, udpcount );
+	exit(0);
+
 }
 
 int main(int argc, char* argv[])
@@ -63,10 +89,19 @@ int main(int argc, char* argv[])
 	int			cpos=0,ipos=0;
 	uint16_t		index[MAX_MSG];
 	uint16_t		pseq=0xaa55;
+	struct sigaction	sa;
 
 	if (argc!=6){
 		printf("%s <IP> <PORT> <TAG> <SECRET> <PKT_SIZE>\n", argv[0]);
 		exit(-1);
+		}
+
+
+	sa.sa_flags = SA_SIGINFO;
+	sigemptyset(&sa.sa_mask);
+	sa.sa_sigaction = rf_handler;
+	if (sigaction(SIGINT, &sa, NULL) == -1){
+		printf("Receive feeds can't install the signal handler.");
 		}
 
 //udp setup
@@ -145,6 +180,7 @@ int main(int argc, char* argv[])
 			memset(index, 0, sizeof(index));
 			while (1){
 				recvmsg(sock_fd, &msg, 0);
+				netlink_count++;
 				data= (uint16_t *) NLMSG_DATA(nlh);
 				pktsize=(*(data+5)-*(data+4))+ 7;
 				if (*(data+pktsize-1)==pseq) printf("Duplicate detected seqn=%d\n", *(data+pktsize-1));
@@ -157,6 +193,7 @@ int main(int argc, char* argv[])
 					for (int i=0; i<MAX_MSG; i++)  *(((uint16_t *) buffer)+i) = put16w(index[i]);
 
 					sendto(udpsockfd, buffer, atoi(argv[5])+MAX_MSG, 0, (const struct sockaddr *) &addr,  sizeof(addr));
+					udpcount++;
 					ipos=0;
 					cpos=0;
 					memset(index, 0, sizeof(index));

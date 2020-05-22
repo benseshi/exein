@@ -40,7 +40,7 @@ The **MLEPlayer** embodies the following functions:
 ## Kernel
 - LSM: this module is embedded within the Linux Kernel image, it collects data from applications and exports them to the requiring MLEPlayers.
 - LKM: This Linux Kernel Module provides Netlink interface to the MLEPlayer, and some useful tools for debugging the solution.
-- patch/exec/task_struct: In order for the solution to work, a few patches to the original Linux Kernel are required. To be more specific, for a process to be tracked it needs to be easily recognized among others. The patch allows an executable tagged in its ELF header to bring this tag to its task struct, and therefore to be recognized among the others. 
+- patch/exec/task_struct: In order for the solution to work, a few patches to the original Linux Kernel are required. To be more specific, for a process to be tracked it needs to be easily recognized among others. The patch allows an executable tagged in its ELF header to bring this tag to its task struct, and therefore to be recognized among the others.
 
 
 
@@ -51,7 +51,7 @@ Once this repo have been downloaded, in order to build Exein you may want to fol
  2. Build the libexnl
  3. Build the mle-player
  4. Tag your target executable
- 5. Produce a model for your target process
+ 5. Train a model for your target process
  6. Test the solution
 
 
@@ -68,7 +68,7 @@ Follow these steps:
  - Copy the provided repository kernel directory contents in the original kernel 4.14.162 directory. Alternatively you can use the kernel patch included in this repository to the original kernel 4.14.162 directory.
  - run **make menuconfig** to enable the Exein module options; in the "**security options**" section and in the "**Device Drivers**" section.
 Now the Linux Kernel is ready to be used with the Exein MLE-Player.
- 
+
 ### Build the libexnl
 To build **libexnl** is a quite straight forward process. Simply go to the main lib directory and run `make`; then place the *./lib/libexnl.so* files in your project lib directory.
 
@@ -76,7 +76,7 @@ To build **libexnl** is a quite straight forward process. Simply go to the main 
 To build **mle-player** is a quite straight forward process. Simply go to the main app directory and run `make`; then place the *mle-player* files in its final destination.
 
 ### Tag your target executable
-Tag an executable is easy as add a section to your elf executable file.
+To tag an executable is as easy as adding a section in your elf executable file.
 Here's an example:
 ```
 echo -ne "\x33\x33" > exein
@@ -85,16 +85,21 @@ rm exein
 
 ```
 NOTE: you need to use your native architecture *objcopy*, or the cross tool for your target architecture.
-### Produce a model for your target process
-The production of a model starts from its behavior data. To extract data from a tagged running process, use the  `/utils/training-forwarder` included in this repo.
-Just compile it for your target architecture and run it specifying the monitoring process tag, and the udp destination where the training-receiver server is waiting for data.
-For example to forward training data for tag 13107 to the server listening at UDP:192.168.1.10:13107 using kernel seed 35465436 please use the following:
+
+
+### Train a model for your target process
+The training of a model starts with the extraction of the target process behavioral data. To collect data from a tagged running process, enable kernel training mode and use `/utils/training-forwarder` included in this repository. To enable kernel training mode, just write something in `/proc/exein/mode_ctl`.
+
+Just compile the `training-forwarder` for your target architecture and run it specifying the monitored process tag and the udp destination where the training-receiver server is listening.
+
+For example to forward training data for tag 13107 to the server listening at UDP:192.168.1.10:13107 using kernel seed 35465436  use the following:
 ```
+echo 1 > /proc/exein/mode_ctl
 ./training-forwarder 192.168.1.10 13107 13107 35465436 1350
 ```
-and than use the monitor application. This activity objective is to collect the regular behavior data, so it is suggested to test all the functionalities you expect to be used in this application.
-The *training receiver* tool will produce a fairly large csv representing the application regular behavior.
-At the time this readme have been written, the service that produces models is not yet online, in the meantime if you need to produce your model please send the file produced by the *training receiver* tool to **test \<at\> exein.io**
+and then use the training-receiver application. The objective of this activity is to collect the regular behavioral data, therefore it is suggested to test all the functionalities you expect to be used in the target application.
+The *training receiver* tool will produce a fairly large csv containing the application regular behavior.
+At the time of this writing, the online service for training models is not online yet. If you need to train a new model feel free to send the csv file produced by the *training receiver* tool to **test \<at\> exein.io** and we'll send you back the trained model.  
 
 
 ### Test the solution
@@ -110,7 +115,7 @@ to start an instance of the MLE-Player you may use the following syntax
 ```
 where the first argument is the *security kernel seed*, the second is the path of the *model config file*, and the third is the *tflite model*.
 
-This repository comes with a few models targeted to uhttpd as example. You can find them in the /sample-models directory.
+This repository comes with a few models targeted to `uhttpd` as example. You can find them in the `/sample-models` directory.
 
 Here's an example where the monitored process is the **uhttpd**.  
 
@@ -140,7 +145,7 @@ Here's a brief description of the most meaningful parts:
 
 - The first line __Starting Exein monitoring for tag: 13107__ indicates that the MLE-Player instance is watching at the tag 13107, the tag assigned to the HTTP server.  
 
-Tags are a central concept of the Exein framework. They act as classifiers and let the Exein framework identify the target processes and their children. 
+Tags are a central concept of the Exein framework. They act as classifiers and let the Exein framework identify the target processes and their children.
 Tags are basically 16-bits identifiers that are embedded into executables by adding a section within the ELF header and are checked every time the executable is ran.
 
 - As traffic to the server starts, one by one, the HTTP server processes are added to the watch-list.
