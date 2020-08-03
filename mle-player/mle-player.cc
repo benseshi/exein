@@ -271,8 +271,9 @@ mle_player(tflite::Interpreter* interpreter, xt::xarray<int> hook_arr, uint16_t 
            std::map<string, string> model_params, std::map<int, xt::xarray<float>> predictions,
            std::map<int, xt::xarray<float>> errors) {
 
+    int index;
     xt::xarray<float> pred;
-
+    DODEBUG("mle_player - begin \n");
     // get meta-parameters from dictionary
     std::vector<int> hooks = split(model_params["hooks"]);
     int window_size = std::stoi(model_params["window_size"]);
@@ -280,14 +281,16 @@ mle_player(tflite::Interpreter* interpreter, xt::xarray<int> hook_arr, uint16_t 
     int rolling_size = std::stoi(model_params["rolling_size"]);
 
     // turn hook sequence into feature for prediction
-    std::vector<int> wsize_hook_arr_tmp(hook_arr.end() - window_size - 1, hook_arr.end() - 1);
+    index = rand()%( ((int)( hook_arr.end()-hook_arr.begin() )) - window_size - 1);
+
+    DODEBUG("mle_player - index seed %d, windowsize=%d, array size=%d\n", index, window_size, hook_arr.end()-hook_arr.begin());
+    std::vector<int> wsize_hook_arr_tmp(hook_arr.begin()+index, hook_arr.begin()+index+window_size);
     std::vector<std::size_t> shape = { 1, window_size };
     auto wsize_hook_arr = xt::adapt(wsize_hook_arr_tmp, shape);
 
 #ifdef EXEIN_DEBUG
     std::cout << wsize_hook_arr << "\n";
 #endif
-
     xt::xarray<int> x_tmp = isnotin(wsize_hook_arr, hooks, -1);
     xt::xarray<int> x = one_hot(x_tmp, hooks, window_size);
 
@@ -296,13 +299,14 @@ mle_player(tflite::Interpreter* interpreter, xt::xarray<int> hook_arr, uint16_t 
 
     // make prediction and update prediction dict
     pred = make_prediction(interpreter, x, output_shape);
+
     predictions[pid] = pred;
 
     // check for signal
     int signal = 0;
     if (xt::mean(predictions[pid])() != 0) {
         xt::xarray<int> onehot_hid;
-        int hid = hook_arr[hook_arr.size() - 1];
+        int hid = hook_arr[index + window_size];
 
         // turn latest Hook ID into one-hot vecto
         if (std::find(hooks.begin(), hooks.end(), hid) != hooks.end())
@@ -367,6 +371,7 @@ int main(int argc, char* argv[]) {
     struct sigaction		sa = {0};
 
 
+    srand(time(NULL));
     sigemptyset(&sa.sa_mask);
     sa.sa_sigaction = sigsegv_handler;
     sa.sa_flags = SA_SIGINFO;
